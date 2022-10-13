@@ -36,6 +36,18 @@ func NewRoom(name string, private bool) *Room {
 	}
 }
 
+func (room *Room) GetId() string {
+	return room.ID.String()
+}
+
+func (room *Room) GetName() string {
+	return room.Name
+}
+
+func (room *Room) GetPrivate() bool {
+	return room.Private
+}
+
 // RunRoom runs our room, accepting various requests
 func (room *Room) RunRoom() {
 	go room.subscribeToRoomMessages()
@@ -52,12 +64,33 @@ func (room *Room) RunRoom() {
 	}
 }
 
+func (room *Room) subscribeToRoomMessages() {
+	pubsub := config.Redis.Subscribe(ctx, room.GetName())
+
+	ch := pubsub.Channel()
+
+	for msg := range ch {
+		room.broadcastToClientsInRoom([]byte(msg.Payload))
+	}
+}
+
 func (room *Room) registerClientInRoom(client *Client) {
 	// By sending the message first the new user won't see his own message.
 	if !room.Private {
 		room.notifyClientJoined(client)
 	}
 	room.clients[client] = true
+}
+
+func (room *Room) notifyClientJoined(client *Client) {
+	message := &Message{
+		Action:  SendMessageAction,
+		Target:  room,
+		Message: fmt.Sprintf(welcomeMessage, client.GetName()),
+	}
+
+	room.broadcastToClientsInRoom(message.encode())
+	room.publishRoomMessage(message.encode())
 }
 
 func (room *Room) unregisterClientInRoom(client *Client) {
@@ -72,42 +105,9 @@ func (room *Room) broadcastToClientsInRoom(message []byte) {
 	}
 }
 
-func (room *Room) notifyClientJoined(client *Client) {
-	message := &Message{
-		Action:  SendMessageAction,
-		Target:  room,
-		Message: fmt.Sprintf(welcomeMessage, client.GetName()),
-	}
-
-	room.broadcastToClientsInRoom(message.encode())
-	room.publishRoomMessage(message.encode())
-}
-
-func (room *Room) GetId() string {
-	return room.ID.String()
-}
-
-func (room *Room) GetName() string {
-	return room.Name
-}
-
-func (room *Room) GetPrivate() bool {
-	return room.Private
-}
-
 func (room *Room) publishRoomMessage(message []byte) {
 	err := config.Redis.Publish(ctx, room.GetName(), message).Err()
 	if err != nil {
 		log.Println(err)
-	}
-}
-
-func (room *Room) subscribeToRoomMessages() {
-	pubsub := config.Redis.Subscribe(ctx, room.GetName())
-
-	ch := pubsub.Channel()
-
-	for msg := range ch {
-		room.broadcastToClientsInRoom([]byte(msg.Payload))
 	}
 }

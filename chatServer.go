@@ -67,6 +67,29 @@ func (server *WsServer) registerClient(client *Client) {
 	server.clients[client] = true
 }
 
+func (server *WsServer) listOnlineClients(client *Client) {
+	for _, user := range server.users {
+		message := &Message{
+			Action: UserJoinedAction,
+			Sender: user,
+		}
+		client.send <- message.encode()
+	}
+}
+
+// Publish userJoined message in pub/sub
+func (server *WsServer) publishClientJoined(client *Client) {
+
+	message := &Message{
+		Action: UserJoinedAction,
+		Sender: client,
+	}
+
+	if err := config.Redis.Publish(ctx, PubSubGeneralChannel, message.encode()).Err(); err != nil {
+		log.Println(err)
+	}
+}
+
 func (server *WsServer) unregisterClient(client *Client) {
 	if _, ok := server.clients[client]; ok {
 		delete(server.clients, client)
@@ -87,21 +110,6 @@ func (server *WsServer) broadcastToClients(message []byte) {
 	}
 }
 
-// NEW: Try to find a room in the repo, if found Run it.
-func (server *WsServer) runRoomFromRepository(name string) *Room {
-	var room *Room
-	dbRoom := server.roomRepository.FindRoomByName(name)
-	if dbRoom != nil {
-		room = NewRoom(dbRoom.GetName(), dbRoom.GetPrivate())
-		room.ID, _ = uuid.Parse(dbRoom.GetId())
-
-		go room.RunRoom()
-		server.rooms[room] = true
-	}
-
-	return room
-}
-
 func (server *WsServer) findRoomByName(name string) *Room {
 	var foundRoom *Room
 	for room := range server.rooms {
@@ -120,63 +128,19 @@ func (server *WsServer) findRoomByName(name string) *Room {
 	return foundRoom
 }
 
-func (server *WsServer) createRoom(name string, private bool) *Room {
-	room := NewRoom(name, private)
-	// NEW: Add room to repo
-	server.roomRepository.AddRoom(room)
+// NEW: Try to find a room in the repo, if found Run it.
+func (server *WsServer) runRoomFromRepository(name string) *Room {
+	var room *Room
+	dbRoom := server.roomRepository.FindRoomByName(name)
+	if dbRoom != nil {
+		room = NewRoom(dbRoom.GetName(), dbRoom.GetPrivate())
+		room.ID, _ = uuid.Parse(dbRoom.GetId())
 
-	go room.RunRoom()
-	server.rooms[room] = true
+		go room.RunRoom()
+		server.rooms[room] = true
+	}
 
 	return room
-}
-
-func (server *WsServer) listOnlineClients(client *Client) {
-	for _, user := range server.users {
-		message := &Message{
-			Action: UserJoinedAction,
-			Sender: user,
-		}
-		client.send <- message.encode()
-	}
-}
-
-func (server *WsServer) findRoomById(ID string) *Room {
-	var foundRoom *Room
-	for room := range server.rooms {
-		if room.GetId() == ID {
-			foundRoom = room
-			break
-		}
-	}
-
-	return foundRoom
-}
-
-func (server *WsServer) findClientByID(ID string) *Client {
-	var foundClient *Client
-
-	for client := range server.clients {
-		if client.ID.String() == ID {
-			foundClient = client
-			break
-		}
-	}
-
-	return foundClient
-}
-
-// Publish userJoined message in pub/sub
-func (server *WsServer) publishClientJoined(client *Client) {
-
-	message := &Message{
-		Action: UserJoinedAction,
-		Sender: client,
-	}
-
-	if err := config.Redis.Publish(ctx, PubSubGeneralChannel, message.encode()).Err(); err != nil {
-		log.Println(err)
-	}
 }
 
 // Publish userleft message in pub/sub
@@ -215,27 +179,6 @@ func (server *WsServer) listenPubSubChannel() {
 	}
 }
 
-func (server *WsServer) handleUserJoinPrivate(message Message) {
-	// Find client for given user, if found add the user to the room.
-	targetClient := server.findClientByID(message.Message)
-	if targetClient != nil {
-		targetClient.joinRoom(message.Target.GetName(), message.Sender)
-	}
-}
-
-// Add the findUserByID method used by client.go
-func (server *WsServer) findUserByID(ID string) models.User {
-	var foundUser models.User
-	for _, client := range server.users {
-		if client.GetId() == ID {
-			foundUser = client
-			break
-		}
-	}
-
-	return foundUser
-}
-
 func (server *WsServer) handleUserJoined(message Message) {
 	// Add the user to the slice
 	server.users = append(server.users, message.Sender)
@@ -251,4 +194,61 @@ func (server *WsServer) handleUserLeft(message Message) {
 		}
 	}
 	server.broadcastToClients(message.encode())
+}
+
+func (server *WsServer) handleUserJoinPrivate(message Message) {
+	// Find client for given user, if found add the user to the room.
+	targetClient := server.findClientByID(message.Message)
+	if targetClient != nil {
+		targetClient.joinRoom(message.Target.GetName(), message.Sender)
+	}
+}
+
+func (server *WsServer) findClientByID(ID string) *Client {
+	var foundClient *Client
+
+	for client := range server.clients {
+		if client.ID.String() == ID {
+			foundClient = client
+			break
+		}
+	}
+
+	return foundClient
+}
+
+func (server *WsServer) createRoom(name string, private bool) *Room {
+	room := NewRoom(name, private)
+	// NEW: Add room to repo
+	server.roomRepository.AddRoom(room)
+
+	go room.RunRoom()
+	server.rooms[room] = true
+
+	return room
+}
+
+func (server *WsServer) findRoomById(ID string) *Room {
+	var foundRoom *Room
+	for room := range server.rooms {
+		if room.GetId() == ID {
+			foundRoom = room
+			break
+		}
+	}
+
+	return foundRoom
+}
+
+// Add the findUserByID method used by client.go
+func (server *WsServer) findUserByID(ID string) models.User {
+	var foundUser models.User
+	for _, client := range server.users {
+		if client.GetId() == ID {
+			foundUser = client
+			break
+		}
+	}
+
+	return foundUser
 }
